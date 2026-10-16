@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="version" content="20261016-PUNTOS">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gastos - Parras Valley</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#080f14;color:#f0ede8;font-family:system-ui,sans-serif;}
+    select option{background:#080f14;}
+    ::-webkit-scrollbar{width:20px;}
+    ::-webkit-scrollbar-track{background:rgba(255,255,255,0.04);}
+    ::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.5);border-radius:10px;border:4px solid transparent;background-clip:padding-box;}
+    ::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7);background-clip:padding-box;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+var useState=React.useState;
+var useEffect=React.useEffect;
+
+var PIN="9876";
+var FB="https://parrasvalley-default-rtdb.firebaseio.com/gastos-v2.json";
+var FB_BACKUP="https://parrasvalley-default-rtdb.firebaseio.com/gastos-backup-v2.json";
+var FB_RAIZ="https://parrasvalley-default-rtdb.firebaseio.com/";
+/* de aqui sale todo solo: la nomina da sueldos y extras, trazabilidad da bultos */
+/* GUARDADO NUEVO (12/10/2026): un dia por llave. Nunca se reescribe todo,
+   asi que no se puede volver a perder el historial. */
+var FB_DIAS="https://parrasvalley-default-rtdb.firebaseio.com/gastos-dias-v1";
+/* LA RAYA ENTRE LOS DOS HISTORIALES. De este dia en adelante es el NUEVO,
+   el que se arma solo con nomina y trazabilidad. Lo de antes es el ANTERIOR. */
+var CORTE="2026-10-12";
+var FB_NOM="https://parrasvalley-default-rtdb.firebaseio.com/nomina-hist-v1";
+var FB_BUL="https://parrasvalley-default-rtdb.firebaseio.com/kpi-bultos-v1";
+var SUELDO_DIA=360;
+var PRECIO_HORA_EXTRA=50;
+var PRECIO_CENA=55;
+
+var AREAS={
+  Persa:{color:"#4ade80",bg:"rgba(74,222,128,0.08)"},
+  Slicer:{color:"#38bdf8",bg:"rgba(56,189,248,0.08)"},
+  Europeo:{color:"#c084fc",bg:"rgba(192,132,252,0.08)"},
+  Morron:{color:"#f59e0b",bg:"rgba(245,158,11,0.08)"},
+  Minibel:{color:"#f43f5e",bg:"rgba(244,63,94,0.08)"},
+};
+var AREA_NAMES=Object.keys(AREAS);
+var CONCEPTOS=["Sueldos","Extras","Cenas"];
+
+/* Los factores de la captura a mano van igual que la conversion de arriba */
+var PRESENTACIONES={
+  Persa:[{id:"20lb",label:"20 lb",factor:1},{id:"40lb",label:"40 lb",factor:2},{id:"12x1",label:"12x1",factor:1},{id:"8x2",label:"8x2",factor:1}],
+  Slicer:[{id:"36",label:"Caja 36",factor:1},{id:"25lb",label:"25 lb",factor:1},{id:"50lb",label:"50 lb",factor:2},{id:"50lbp",label:"50 lb plain",factor:1},{id:"18",label:"Caja 18",factor:0.5},{id:"19",label:"1/9 bushel",factor:2},{id:"24",label:"Caja 24",factor:0.67}],
+  Europeo:[{id:"12",label:"Caja 12",factor:1},{id:"24",label:"Caja 24",factor:2},{id:"19",label:"1/9 bushel",factor:1}],
+  Morron:[{id:"11lb",label:"11 lb",factor:1},{id:"19",label:"1/9 bushel",factor:2.255}],
+  Minibel:[{id:"12x8oz",label:"12x8oz",factor:1},{id:"12x1",label:"12x1",factor:1},{id:"18lb",label:"18 lb",factor:1}]
+};
+function initPres(area){var o={};(PRESENTACIONES[area]||[]).forEach(function(p){o[p.id]="";});return o;}
+function calcBultosBase(area,pres){
+  var total=0;
+  (PRESENTACIONES[area]||[]).forEach(function(p){total+=nv(pres[p.id]||0)*p.factor;});
+  return Math.round(total*100)/100;
+}
+
+function nv(v){var x=parseFloat(v);return isNaN(x)?0:x;}
+function ni(v){var x=parseInt(v);return isNaN(x)?0:x;}
+function r2(n){return Math.round(n*100)/100;}
+function sumaObj(o){
+  if(o==null)return 0;
+  if(typeof o==="number")return o;
+  if(typeof o==="string"){var x=parseFloat(o);return isNaN(x)?0:x;}
+  var t=0;Object.keys(o).forEach(function(k){t+=sumaObj(o[k]);});return t;
+}
+function f1(n){return n.toFixed(1);}
+function fnum(n){return Math.round(nv(n)*100)/100===Math.round(nv(n))?Math.round(nv(n)).toLocaleString("es-MX"):nv(n).toLocaleString("es-MX",{maximumFractionDigits:2});}
+function fmt(n){return "$"+n.toFixed(2);}
+function hoy(){var d=new Date();d.setDate(d.getDate()-1);return d.toLocaleDateString("es-MX",{day:"2-digit",month:"2-digit",year:"numeric"});}
+
+/* ---- FECHAS (revision 2026-10-10) -------------------------------------
+   Los registros guardan la fecha como TEXTO "dd/mm/aaaa". Un .sort() las
+   acomoda por DIA primero, no por anio: por eso el historial salia salteado
+   y los "ultimos 14 dias" agarraban julio en lugar de septiembre y octubre
+   ("31/07" ordena despues de "09/10" porque 3 es mayor que 0).
+   fKey() pasa cualquier formato a un numero aaaammdd que si ordena bien. */
+var MES3=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+function fKey(f){
+  var s=String(f||"").trim(),m;
+  m=/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/.exec(s);
+  if(m){var a=+m[3];if(a<100)a+=2000;return a*10000+(+m[2])*100+(+m[1]);}
+  m=/^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if(m)return (+m[1])*10000+(+m[2])*100+(+m[3]);
+  return 0;
+}
+function cmpF(a,b){var x=fKey(a),y=fKey(b);
+  if(x!==y)return x-y;return String(a).localeCompare(String(b));}
+function ordF(arr){return arr.slice().sort(cmpF);}
+function fISO(f){var k=fKey(f);if(!k)return "";
+  return Math.floor(k/10000)+"-"+("0"+(Math.floor(k/100)%100)).slice(-2)+"-"+("0"+(k%100)).slice(-2);}
+function deISO(s){var m=/^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(s||""));
+  if(!m)return "";return ("0"+m[3]).slice(-2)+"/"+("0"+m[2]).slice(-2)+"/"+m[1];}
+function fLbl(f){var k=fKey(f);if(!k)return String(f||"");
+  return (k%100)+" "+MES3[(Math.floor(k/100)%100)-1];}
+function fLargo(f){var k=fKey(f);if(!k)return String(f||"");
+  return (k%100)+" de "+MES3[(Math.floor(k/100)%100)-1]+" "+Math.floor(k/10000);}
+
+function initForm(){return{fecha:hoy(),area:"Persa",trabajadores:"",horasExtra:"",cenas:"",pres:initPres("Persa"),horasTrabajadas:"",rejas:"",observaciones:""};}
+
+function calcular(form){
+  var trab=ni(form.trabajadores);
+  var hExtra=nv(form.horasExtra);
+  var ncenas=ni(form.cenas);
+  var bultos=calcBultosBase(form.area,form.pres||{});
+  var horas=nv(form.horasTrabajadas);
+  var rejas=nv(form.rejas);
+  var totalSueldos=r2(trab*SUELDO_DIA);
+  var totalExtras=r2(hExtra*PRECIO_HORA_EXTRA);
+  var totalCenas=r2(ncenas*PRECIO_CENA);
+  var totalCosto=r2(totalSueldos+totalExtras+totalCenas);
+  var cpb=bultos>0?r2(totalCosto/bultos):0;
+  var bxp=trab>0?r2(bultos/trab):0;
+  var bxh=horas>0?r2(bultos/horas):0;
+  var rxh=horas>0?r2(rejas/horas):0;
+  return{trab,hExtra,ncenas,bultos,horas,rejas,totalSueldos,totalExtras,totalCenas,totalCosto,cpb,bxp,bxh,rxh};
+}
+
+/* 14/10/2026: el costo por bulto NO se redondea. Un 1.75 salia "$2" en la
+   grafica y los centavos son justo la diferencia que importa. Arriba de $100
+   los centavos no dicen nada, asi que ahi si va entero. */
+function kFmt(v){
+  if(v>=1000000)return "$"+(v/1000000).toFixed(1)+"M";
+  if(v>=1000)return "$"+Math.round(v/1000)+"k";
+  if(v>=100)return "$"+Math.round(v);
+  if(v===0)return "$0";
+  return "$"+(Math.round(v*100)/100).toFixed(2);
+}
+/* 12/10/2026: la grafica se encimaba cuando hay muchos dias. Ahora las
+   etiquetas se van salteando y los numeros solo salen si caben. */
+function LineChart(props){
+  var series=props.series||[];var height=props.height||170;
+  var n=0;series.forEach(function(s){if(s.datos.length>n)n=s.datos.length;});
+  /* 16/10/2026: antes solo se pintaba el dia con valor MAYOR a cero, asi que
+     un dia en que la linea no trabajo (o costo cero) desaparecia de la grafica
+     y la raya brincaba de un dia a otro como si fueran seguidos. Ahora se
+     pinta el dia que TIENE registro, valga lo que valga, y donde no hay
+     registro la raya se corta. */
+  var allVals=[];series.forEach(function(s){s.datos.forEach(function(d){if(d.hay)allVals.push(d.v);});});
+  if(!allVals.length)return <div style={{fontSize:12,color:"#374151",textAlign:"center",padding:18}}>Sin suficientes datos</div>;
+  var maxV=Math.max.apply(null,allVals);var minV=Math.min.apply(null,allVals);
+  if(minV>0)minV=0;                      /* el eje arranca en cero: se lee mejor */
+  if(maxV===minV)maxV=minV+1;
+  var pad={t:16,b:26,l:46,r:12};var W=760;var H=height;
+  var iW=W-pad.l-pad.r;var iH=H-pad.t-pad.b;
+  var X=function(i){return n<2?pad.l+iW/2:pad.l+iW*(i/(n-1));};
+  var Y=function(v){return pad.t+iH*(1-(v-minV)/(maxV-minV));};
+  var paso=Math.ceil(n/8);               /* cuantas etiquetas caben */
+  var conPunto=n<=24, conNum=n<=12;
+  var lineas=[minV,minV+(maxV-minV)/2,maxV];
+  return(
+    <svg width="100%" viewBox={"0 0 "+W+" "+H} preserveAspectRatio="none" style={{display:"block"}}>
+      {lineas.map(function(gv,i){var y=Y(gv);return(
+        <g key={i}>
+          <line x1={pad.l} y1={y} x2={pad.l+iW} y2={y} stroke="rgba(255,255,255,0.07)" strokeWidth="1"/>
+          <text x={pad.l-6} y={y+4} textAnchor="end" fontSize="11" fill="#4a6a7a">{kFmt(gv)}</text>
+        </g>);})}
+      {series.map(function(s,si){
+        /* un tramo por cada corrida de dias seguidos con registro */
+        var segs=[],cur=[],pts=[];
+        s.datos.forEach(function(d,i){
+          if(d.hay){var p={x:X(i),y:Y(d.v),v:d.v};cur.push(p);pts.push(p);}
+          else{if(cur.length)segs.push(cur);cur=[];}
+        });
+        if(cur.length)segs.push(cur);
+        if(!pts.length)return null;
+        return(
+          <g key={si}>
+            {segs.map(function(g,gi){
+              if(g.length<2)return null;
+              return <path key={gi} fill="none" stroke={s.color} strokeWidth="2.5"
+                strokeLinejoin="round" strokeLinecap="round"
+                d={"M"+g.map(function(p){return p.x.toFixed(1)+","+p.y.toFixed(1);}).join(" L")}/>;
+            })}
+            {conPunto&&pts.map(function(p,i){return <circle key={i} cx={p.x} cy={p.y} r="3.5"
+              fill="#080f14" stroke={s.color} strokeWidth="2"/>;})}
+            {conNum&&series.length===1&&pts.map(function(p,i){return <text key={i} x={p.x} y={p.y-9}
+              textAnchor="middle" fontSize="11" fill={s.color} fontWeight="700">{kFmt(p.v)}</text>;})}
+          </g>
+        );
+      })}
+      {(props.dias||(series[0]||{datos:[]}).datos.map(function(d){return d.label;}))
+        .map(function(lb,i){var d={label:lb};
+        if(i%paso!==0&&i!==n-1)return null;
+        return <text key={i} x={X(i)} y={H-7} textAnchor={i===0?"start":(i===n-1?"end":"middle")}
+          fontSize="11" fill="#4a6a7a">{d.label}</text>;
+      })}
+    </svg>
+  );
+}
+
+function Origen(props){
+  var v=props.v,set=props.set,n=props.n||{};
+  var ops=[["nue","Nuevo",n.nue||0],["ant","Anterior",n.ant||0],["todo","Todo",(n.nue||0)+(n.ant||0)]];
+  var raya=deISO(CORTE);
+  return(
+    <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:12}}>
+      {ops.map(function(o){var on=v===o[0];
+        return <button key={o[0]} onClick={function(){set(o[0]);}}
+          style={{padding:"7px 16px",border:"2px solid "+(on?"#38bdf8":"rgba(255,255,255,0.1)"),borderRadius:18,background:on?"rgba(56,189,248,0.15)":"transparent",color:on?"#38bdf8":"#4a6a7a",fontFamily:"system-ui",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+          {o[1]} <span style={{opacity:.65,fontSize:11}}>{o[2]}</span></button>;})}
+      <span style={{fontSize:11,color:"#4a6a7a",fontWeight:700,alignSelf:"center"}}>
+        nuevo desde el {raya}</span>
+    </div>
+  );
+}
+
+function ModalPin(props){
+  var s1=useState(""); var v=s1[0]; var sv=s1[1];
+  var s2=useState(false); var err=s2[0]; var sErr=s2[1];
+  function ok(){if(v===PIN){sv("");sErr(false);props.onOk();}else{sErr(true);sv("");}}
+  return(
+    <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.9)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"#080f14",border:"2px solid rgba(56,189,248,0.3)",borderRadius:14,padding:28,maxWidth:280,width:"100%",textAlign:"center"}}>
+        <div style={{fontSize:16,fontWeight:900,color:"#f0f0e8",marginBottom:4}}>Acceso editor</div>
+        <input type="number" value={v} onChange={function(e){sv(e.target.value.slice(0,8));sErr(false);}} placeholder="PIN"
+          style={{width:"100%",background:"rgba(0,0,0,0.4)",border:"2px solid "+(err?"#f87171":"rgba(56,189,248,0.4)"),borderRadius:9,padding:"11px",color:"#38bdf8",fontFamily:"Georgia,serif",fontSize:24,textAlign:"center",outline:"none",marginBottom:err?6:14,letterSpacing:6}}/>
+        {err&&<div style={{fontSize:12,color:"#f87171",marginBottom:10}}>PIN incorrecto</div>}
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={props.onCancel} style={{flex:1,padding:"10px",background:"rgba(255,255,255,0.05)",border:"2px solid rgba(255,255,255,0.1)",borderRadius:8,color:"#6b7280",cursor:"pointer",fontFamily:"system-ui",fontWeight:700}}>Cancelar</button>
+          <button onClick={ok} style={{flex:1,padding:"10px",background:"#0e3a5f",border:"2px solid rgba(56,189,248,0.5)",borderRadius:8,color:"#38bdf8",cursor:"pointer",fontFamily:"system-ui",fontWeight:900}}>Entrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+var FIXED={fontSize:11,color:"#4a6a7a",marginBottom:3};
+var INP={width:"100%",background:"rgba(0,0,0,0.4)",border:"2px solid rgba(255,255,255,0.1)",borderRadius:7,padding:"10px",color:"#f0f0e8",fontFamily:"system-ui",fontSize:16,fontWeight:700,outline:"none"};
+var LBL={fontSize:10,color:"#4a6a7a",fontWeight:800,textTransform:"uppercase",letterSpacing:1.2,marginBottom:4,display:"block"};
+
+function App(){
+  var s1=useState("cap"); var tab=s1[0]; var setTab=s1[1];
+  var s2=useState([]); var registros=s2[0]; var setRegistros=s2[1];
+  var s3=useState(initForm()); var form=s3[0]; var setForm=s3[1];
+  var s4=useState(false); var auth=s4[0]; var setAuth=s4[1];
+  var s5=useState(false); var showPin=s5[0]; var setShowPin=s5[1];
+  var s6=useState(null); var pinCb=s6[0]; var setPinCb=s6[1];
+  var s7=useState(false); var mob=s7[0]; var setMob=s7[1];
+  var s8=useState(null); var openH=s8[0]; var setOpenH=s8[1];
+  var s9=useState(""); var fArea=s9[0]; var setFArea=s9[1];
+  var s10=useState(""); var fConc=s10[0]; var setFConc=s10[1];
+  var s11=useState(false); var cargando=s11[0]; var setCargando=s11[1];
+  var s12=useState(null); var editR=s12[0]; var setEditR=s12[1];
+  var s13=useState(null); var confirmBorrarDia=s13[0]; var setConfirmBorrarDia=s13[1];
+  var s14=useState(null); var prevExtras=s14[0]; var setPrevExtras=s14[1]; // para deshacer jalar
+  var s15=useState([]); var mesesBkp=s15[0]; var setMesesBkp=s15[1];   // meses de respaldo que SI existen
+  var s16=useState(""); var busca=s16[0]; var setBusca=s16[1];         // buscador de un dia en el historial
+  var s17=useState(null); var bkps=s17[0]; var setBkps=s17[1];         // respaldos leidos de Firebase
+  var s18=useState(""); var bkMsg=s18[0]; var setBkMsg=s18[1];
+  var s19=useState(false); var cargaOk=s19[0]; var setCargaOk=s19[1];  // la carga inicial si llego
+  var s20=useState(""); var hConc=s20[0]; var setHConc=s20[1];         // concepto en el historial
+  var s21=useState("gasto"); var dMetr=s21[0]; var setDMetr=s21[1];    // que grafica el dashboard
+  var s22=useState(""); var dDe=s22[0]; var setDDe=s22[1];              // periodo del dashboard
+  var s23=useState(""); var dHa=s23[0]; var setDHa=s23[1];
+  var s24=useState(""); var capF=s24[0]; var setCapF=s24[1];        // dia que se esta armando
+  var s25=useState({}); var capNom=s25[0]; var setCapNom=s25[1];    // lo que trae la nomina
+  var s26=useState(null); var capBul=s26[0]; var setCapBul=s26[1];  // lo que trae trazabilidad
+  var s27=useState({}); var capCena=s27[0]; var setCapCena=s27[1];  // lo unico a mano
+  var s28=useState({}); var capMan=s28[0]; var setCapMan=s28[1];    // a mano cuando falta la fuente
+  var s29=useState(""); var capMsg=s29[0]; var setCapMsg=s29[1];
+  var s30=useState(false); var capCar=s30[0]; var setCapCar=s30[1];
+  var s31=useState("todas"); var hMod=s31[0]; var setHMod=s31[1];   // todas / dia / rango
+  var s32=useState(""); var hDe=s32[0]; var setHDe=s32[1];
+  var s33=useState(""); var hHa=s33[0]; var setHHa=s33[1];
+  var s34=useState("nue"); var fOri=s34[0]; var setFOri=s34[1];  // nue / ant / todo
+
+  useEffect(function(){
+    function resize(){setMob(window.innerWidth<768);}
+    resize();window.addEventListener("resize",resize);
+    return function(){window.removeEventListener("resize",resize);};
+  },[]);
+
+  useEffect(function(){
+    setCargando(true);
+    Promise.all([
+      fetch(FB_DIAS+".json?t="+Date.now()).then(function(r){return r.json();}).catch(function(){return null;}),
+      fetch(FB+"?t="+Date.now()).then(function(r){return r.json();}).catch(function(){return null;})
+    ]).then(function(res){
+      /* DOS HISTORIALES APARTE (12/10/2026):
+         la raya es la FECHA (CORTE), no el nodo, porque una version anterior
+         alcanzo a copiar dias viejos al nodo nuevo y quedaron en los dos lados.
+         Ademas se quita el duplicado: un dia que este en los dos se cuenta UNA vez,
+         y manda el del nodo nuevo. A gastos-v2 no se le escribe nunca. */
+      var kC=fKey(CORTE);
+      function marca(r){
+        return Object.assign({},r,{_o:fKey(r.fecha)>=kC?"nue":"ant"});
+      }
+      var D=res[0]||{}, arr=[], vistos={};
+      Object.keys(D).forEach(function(f){
+        var dd=D[f]||{};
+        Object.keys(dd).forEach(function(a){
+          var r=dd[a];
+          if(!r||typeof r!=="object")return;
+          var q=marca(Object.assign({},r,{fecha:r.fecha||deISO(f),area:r.area||a}));
+          vistos[fKey(q.fecha)+"|"+q.area]=1;
+          arr.push(q);
+        });
+      });
+      aLista(res[1]).filter(esReg).forEach(function(r){
+        if(vistos[fKey(r.fecha)+"|"+r.area])return;
+        arr.push(marca(r));
+      });
+      setRegistros(arr);
+      setCargaOk(true);
+      setCargando(false);
+    }).catch(function(){setCargando(false);});
+  },[]);
+
+  useEffect(function(){
+    /* La lista de meses del respaldo estaba escrita a mano y se quedo en
+       julio 2026. Ahora se leen las llaves que de veras hay en Firebase. */
+    fetch(FB_BACKUP.replace(".json",".json?shallow=true"))
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(!d)return;
+        var ms=Object.keys(d).map(function(k){return k.replace("mes_","").replace("_","-");})
+          .filter(function(x){return /^\d{4}-\d{2}$/.test(x);});
+        ms.sort().reverse();
+        if(ms.length)setMesesBkp(ms);
+      }).catch(function(){});
+  },[]);
+
+  /* jala sola la nomina y los bultos del dia elegido */
+  useEffect(function(){
+    if(!capF){setCapNom({});setCapBul(null);return;}
+    /* las cenas que ya se habian guardado de ese dia vuelven a salir, y lo que
+       se tecleo de otro dia NO se queda pegado */
+    var fTxt=deISO(capF), q={};
+    registros.forEach(function(r){
+      if(fKey(r.fecha)===fKey(fTxt))q[r.area]=String(r.cenas||"");});
+    setCapCena(q);setCapMan({});
+    setCapCar(true);setCapMsg("");
+    var pn=AREA_NAMES.map(function(a){
+      return fetch(FB_NOM+"/"+a+"/"+capF+".json?t="+Date.now())
+        .then(function(r){return r.json();}).then(function(v){return {a:a,v:v};})
+        .catch(function(){return {a:a,v:null};});
+    });
+    var pb=fetch(FB_BUL+"/"+capF+".json?t="+Date.now())
+      .then(function(r){return r.json();}).catch(function(){return null;});
+    Promise.all([Promise.all(pn),pb]).then(function(res){
+      var n={};res[0].forEach(function(x){if(x.v&&typeof x.v==="object")n[x.a]=x.v;});
+      setCapNom(n);setCapBul(res[1]||null);setCapCar(false);
+    }).catch(function(){setCapCar(false);setCapMsg("No se pudo leer.");});
+  },[capF]);
+
+  /* Persa y Embolsado son UNA sola linea.
+     CONVERSION A BASE (14/10/2026, dictada por Miguel):
+       Slicer a 36 CT . Europeo a 12 CT . Morron a 11 LBS . Persa a 20 LBS
+       Minibel pasa tal cual.
+     La llave del nodo trae la presentacion con la diagonal escapada (~s) y NO
+     trae la calidad, asi que el grado se lee del propio texto (PLAIN, CHOICE,
+     TERCERA). El nodo se queda en crudo: la conversion vive aqui, igual que en
+     KPIs vive la suya. */
+  function desEsc(k){return String(k).split("~s").join("/");}
+  function factorBulto(linea,llave){
+    var p=desEsc(llave).toUpperCase().replace(/\s+/g," ").trim();
+    var ter=p.indexOf("TERCERA")>=0||p.indexOf("CHOICE")>=0||p.indexOf("PLAIN")>=0;
+    var bus=p.indexOf("BUSHEL")===0||p.indexOf("1/9")>=0;
+    if(linea==="Persa"||linea==="Embolsado"){
+      return p.indexOf("40 LBS")===0?2:1;   /* 20 LBS, 12X1 y 8X2 tal cual */
+    }
+    if(linea==="Slicer"){
+      if(p.indexOf("50 LBS")===0)return ter?1:2;  /* plain y tercera NO se convierten */
+      if(p.indexOf("18 CT")===0)return 0.5;
+      if(p.indexOf("42 CT")===0)return 1.17;
+      if(p.indexOf("62 CT")===0)return 1.72;
+      if(bus)return 2;
+      return 1;                              /* 36 CT y 25 LBS pasan igual */
+    }
+    if(linea==="Europeo"){
+      if(ter)return 1;                       /* la tercera pasa tal cual */
+      if(bus)return 1;                       /* el bushel 1/9 pasa tal cual */
+      if(p.indexOf("24 CT")===0)return 2;
+      if(p.indexOf("33 CT")===0)return 2.75;
+      return 1;                              /* 12 CT */
+    }
+    if(linea==="Morron"){
+      if(p.indexOf("12X2")===0)return 0.975;
+      if(p.indexOf("8X6")===0)return 1.06;
+      if(p.indexOf("24 CT RED")===0)return 0.99;
+      if(p.indexOf("22-24 CT")===0)return 1;
+      if(bus||p.indexOf("25 LBS")===0)return 2.255;
+      return 1;                              /* 11 LBS */
+    }
+    return 1;                                /* Minibel: tal cual */
+  }
+  function convLinea(o,linea){
+    if(o==null)return 0;
+    var t=0;
+    Object.keys(o).forEach(function(k){t+=sumaObj(o[k])*factorBulto(linea,k);});
+    return t;
+  }
+  function bultosDe(B,a){
+    if(!B)return null;
+    var t=convLinea(B[a],a);
+    if(a==="Persa")t+=convLinea(B.Embolsado,"Embolsado");
+    return Math.round(t*100)/100;
+  }
+
+  function save(v){
+    /* CANDADO (12/10/2026): si la lectura inicial no llego, la pantalla puede
+       estar vacia o incompleta. Un PUT en ese momento se lleva TODO lo que
+       habia en Firebase. Por eso aqui no se escribe nada hasta que la carga
+       haya respondido. */
+    if(!cargaOk){
+      alert("Todavia no carga el historial. No se guardo nada; vuelve a intentar en un momento.");
+      return;
+    }
+    // Proteccion: nunca guardar array vacio si ya habia datos
+    if((!v||v.length===0)&&registros.length>0){
+      console.warn("Intento de borrar todos los registros bloqueado");
+      return;
+    }
+    setRegistros(v);
+    fetch(FB,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(v)});
+    // Respaldo automatico mensual en nodo separado
+    try{
+      /* Este respaldo es una COPIA COMPLETA de todos los registros, con el
+         nombre del mes en que se guardo. No es "los datos de ese mes". */
+      var mesActual=new Date().toISOString().slice(0,7);
+      var keyMes="mes_"+mesActual.replace("-","_");
+      var bkUrl=FB_BACKUP.replace(".json","/"+keyMes+".json");
+      fetch(bkUrl,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(v)});
+    }catch(e){}
+  }
+  function exportarJSON(){
+    var blob=new Blob([JSON.stringify(registros,null,2)],{type:"application/json"});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement("a");
+    a.href=url;a.download="gastos-backup-"+new Date().toISOString().slice(0,10)+".json";
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  /* ---------- RECUPERAR LO QUE FALTA (12/10/2026) ----------
+     Lee TODOS los respaldos y regresa SOLO los dias-linea que ya no estan en
+     la base de ahora. No borra ni pisa nada de lo que si esta. */
+  function aLista(d){
+    if(Array.isArray(d))return d.filter(function(x){return !!x;});
+    if(d&&typeof d==="object")return Object.keys(d).map(function(k){return d[k];}).filter(function(x){return !!x;});
+    return [];
+  }
+  function claveDL(r){return fKey(r.fecha)+"|"+r.area;}
+  function esReg(r){return !!(r&&typeof r==="object"&&r.fecha&&r.area&&fKey(r.fecha)>0);}
+  var MES3=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+  function mesesDe(lista){
+    var m={};lista.forEach(function(r){var k=fKey(r.fecha);if(k>0)m[Math.floor(k/100)]=1;});
+    return Object.keys(m).map(Number).sort(function(a,b){return a-b;})
+      .map(function(x){return MES3[(x%100)-1]+" "+Math.floor(x/100);}).join(" . ");
+  }
+  function dosD(n){return (n<10?"0":"")+n;}
+  function txtK(k){return dosD(k%100)+"/"+dosD(Math.floor(k/100)%100)+"/"+Math.floor(k/10000);}
+  function rangoDe(lista){
+    var ks=lista.map(function(r){return fKey(r.fecha);}).filter(function(x){return x>0;})
+      .sort(function(a,b){return a-b;});
+    if(!ks.length)return "--";
+    return txtK(ks[0])+" al "+txtK(ks[ks.length-1]);
+  }
+  function faltantesDe(lista){
+    var mios={};registros.forEach(function(r){mios[claveDL(r)]=1;});
+    return lista.filter(function(r){return r&&r.fecha&&r.area&&!mios[claveDL(r)];});
+  }
+  /* Barre TODAS las llaves de Firebase que tengan que ver con gastos y arma la
+     lista de fuentes con registros. Asi no hay que adivinar donde quedo nada. */
+  function escanea(){
+    setBkMsg("Buscando en todo Firebase...");
+    fetch(FB_RAIZ+".json?shallow=true").then(function(r){return r.json();}).then(function(d){
+      var llaves=Object.keys(d||{}).filter(function(k){return /gasto/i.test(k);});
+      if(!llaves.length){setBkps([]);setBkMsg("No hay ningun nodo de gastos en Firebase.");return;}
+      Promise.all(llaves.map(function(k){
+        return fetch(FB_RAIZ+k+".json").then(function(r){return r.json();})
+          .then(function(v){return {k:k,v:v};})
+          .catch(function(){return {k:k,v:null};});
+      })).then(function(res){
+        var out=[];
+        res.forEach(function(x){
+          var directo=aLista(x.v).filter(esReg);
+          if(directo.length){
+            out.push({k:x.k,mes:x.k,n:directo.length,rango:rangoDe(directo),
+                      meses:mesesDe(directo),lista:directo});
+            return;
+          }
+          if(x.v&&typeof x.v==="object")Object.keys(x.v).forEach(function(sub){
+            var l2=aLista(x.v[sub]).filter(esReg);
+            if(!l2.length)return;
+            out.push({k:x.k+"/"+sub,mes:x.k+" / "+sub.replace("mes_","").replace("_","-"),
+                      n:l2.length,rango:rangoDe(l2),meses:mesesDe(l2),lista:l2});
+          });
+        });
+        out.sort(function(a,b){return b.n-a.n;});
+        setBkps(out);
+        setBkMsg(out.length?"":"No se encontro ningun registro guardado.");
+      });
+    }).catch(function(){setBkMsg("No se pudo leer Firebase.");});
+  }
+  function revisaRespaldos(conserva){
+    if(!conserva)setBkMsg("Revisando...");
+    fetch(FB_BACKUP).then(function(r){return r.json();}).then(function(d){
+      if(!d){setBkps([]);setBkMsg("No hay respaldos en Firebase.");return;}
+      var out=Object.keys(d).map(function(k){
+        var lista=aLista(d[k]);
+        /* el conteo de faltantes NO se guarda aqui: se calcula al pintar,
+           con los registros de ese momento, si no se queda viejo */
+        return {k:k,mes:k.replace("mes_","").replace("_","-"),n:lista.length,
+                rango:rangoDe(lista),meses:mesesDe(lista),lista:lista};
+      }).sort(function(a,b){return a.mes<b.mes?1:-1;});
+      setBkps(out);if(!conserva)setBkMsg("");
+    }).catch(function(){setBkMsg("No se pudo leer el respaldo.");});
+  }
+  function traeFaltantes(lista){
+    var nuevos=faltantesDe(lista);
+    if(!nuevos.length){setBkMsg("Ese respaldo no trae nada que falte.");return;}
+    var union=registros.concat(nuevos);
+    union.sort(function(a,b){return fKey(a.fecha)-fKey(b.fecha);});
+    setRegistros(union);
+    fetch(FB,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(union)})
+      .then(function(){setBkMsg("Se regresaron "+nuevos.length+" registros. Ahora hay "+union.length+".");
+        setTimeout(function(){revisaRespaldos(true);},400);})
+      .catch(function(){setBkMsg("No se pudo escribir en Firebase.");});
+  }
+  function traeTodo(){
+    if(!bkps||!bkps.length)return;
+    var todo=[];bkps.forEach(function(b){todo=todo.concat(b.lista);});
+    var vistos={},unicos=[];
+    todo.forEach(function(r){if(!r||!r.fecha||!r.area)return;
+      var k=claveDL(r)+"|"+(r.id||"");if(vistos[k])return;vistos[k]=1;unicos.push(r);});
+    traeFaltantes(unicos);
+  }
+  function restaurarMes(mes){
+    /* 12/10/2026: ANTES ESTE BOTON REEMPLAZABA TODO con el respaldo del mes, y
+       con eso se podia perder lo que si estaba. Ahora AGREGA lo que falte y no
+       borra nada, igual que el bloque verde. */
+    var keyMes="mes_"+mes.replace("-","_");
+    var bkUrl=FB_BACKUP.replace(".json","/"+keyMes+".json");
+    fetch(bkUrl).then(function(r){return r.json();}).then(function(dr){
+      var d=aLista(dr).filter(esReg);
+      if(d.length>0)traeFaltantes(d);
+      else alert("Sin respaldo disponible para "+mes);
+    }).catch(function(){alert("Error al recuperar respaldo");});
+  }
+  function setF(k,v){setForm(function(f){var n=Object.assign({},f);n[k]=v;return n;});}
+
+  function pinReq(cb){if(auth){cb();return;}setPinCb(function(){return cb;});setShowPin(true);}
+  function pinOk(){setAuth(true);setShowPin(false);if(pinCb){pinCb();setPinCb(null);}}
+
+  /* los renglones del dia que se esta armando */
+  var filasCap=AREA_NAMES.map(function(a){
+    var N=capNom[a]||null, bu=bultosDe(capBul,a), M=capMan[a]||{};
+    function tomo(k,v){return (M[k]!==undefined&&M[k]!=="")?nv(M[k]):v;}
+    var trab=tomo("trab",N?nv(N.np):null);
+    var sue =tomo("sue", N?nv(N.jor):null);
+    var ext =tomo("ext", N?nv(N.ext):null);
+    var bul =tomo("bul", bu);
+    var cen =nv(capCena[a]||0);
+    var tot =nv(sue)+nv(ext)+cen*PRECIO_CENA;
+    return {a:a,N:N,hayN:!!N,hayB:bu!==null,
+      trab:trab,sue:sue,ext:ext,bul:bul,cen:cen,tot:r2(tot),
+      cpb:nv(bul)>0?r2(tot/nv(bul)):0,
+      bxp:nv(trab)>0&&nv(bul)>0?r2(nv(bul)/nv(trab)):0};
+  });
+  var TC={trab:0,sue:0,ext:0,cen:0,bul:0,tot:0};
+  filasCap.forEach(function(x){TC.trab+=nv(x.trab);TC.sue+=nv(x.sue);TC.ext+=nv(x.ext);
+    TC.cen+=x.cen;TC.bul+=nv(x.bul);TC.tot+=x.tot;});
+
+  var nDias=(function(){var q={nue:{},ant:{}};
+    registros.forEach(function(r){q[r._o==="ant"?"ant":"nue"][fKey(r.fecha)]=1;});
+    return {nue:Object.keys(q.nue).length,ant:Object.keys(q.ant).length};})();
+  function porOrigen(lista){
+    if(fOri==="todo")return lista;
+    return lista.filter(function(r){return (r._o==="ant"?"ant":"nue")===fOri;});
+  }
+
+  function guardaDia(){
+    if(!capF)return;
+    var fTxt=deISO(capF);
+    var hay=filasCap.filter(function(x){return x.tot>0||nv(x.bul)>0;});
+    if(!hay.length){setCapMsg("Ese dia no trae nada que guardar.");return;}
+    var base=registros.filter(function(r){return fKey(r.fecha)!==fKey(fTxt);});
+    var nuevos=hay.map(function(x,i){
+      return {id:Date.now()+i,fecha:fTxt,area:x.a,
+        trabajadores:nv(x.trab),horasExtra:x.N?r2(nv(x.N.mx)/60):0,cenas:x.cen,
+        bultos:nv(x.bul),pres:{},rejas:0,
+        horasTrabajadas:x.N?r2(nv(x.N.min)/60):0,observaciones:"",
+        totalSueldos:r2(nv(x.sue)),totalExtras:r2(nv(x.ext)),
+        totalCenas:r2(x.cen*PRECIO_CENA),totalCosto:x.tot,
+        cpb:x.cpb,bxp:x.bxp,bxh:0,rxh:0};
+    });
+    if(!cargaOk){setCapMsg("Todavia no carga el historial. No se guardo nada.");return;}
+    var pay={};nuevos.forEach(function(r){pay[r.area]=r;});
+    setRegistros(base.concat(nuevos));
+    fetch(FB_DIAS+"/"+capF+".json",{method:"PUT",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify(pay)})
+      .then(function(r){setCapMsg(r.ok
+        ?"Guardado el "+fTxt+": "+nuevos.length+" lineas"
+        :"NO se guardo. Vuelve a intentar.");})
+      .catch(function(){setCapMsg("NO se guardo. Vuelve a intentar.");});
+  }
+
+  var calc=calcular(form);
+  var cfg=AREAS[form.area]||AREAS.Persa;
+  var canGuardar=form.fecha&&form.trabajadores&&(calc.bultos>0||calc.hExtra>0||calc.ncenas>0);
+
+  function guardar(){
+    if(!canGuardar)return;
+    var reg={id:Date.now(),fecha:form.fecha,area:form.area,
+      trabajadores:calc.trab,horasExtra:calc.hExtra,cenas:calc.ncenas,
+      bultos:calc.bultos,pres:Object.assign({},form.pres),rejas:calc.rejas,horasTrabajadas:calc.horas,observaciones:form.observaciones||"",
+      totalSueldos:calc.totalSueldos,totalExtras:calc.totalExtras,totalCenas:calc.totalCenas,
+      totalCosto:calc.totalCosto,cpb:calc.cpb,bxp:calc.bxp,bxh:calc.bxh,rxh:calc.rxh};
+    save(registros.concat([reg]));
+    setForm(initForm());
+  }
+
+  // Datos para graficas
+  var fechas=[]; var fSet={};
+  registros.forEach(function(r){if(!fSet[r.fecha]){fSet[r.fecha]=true;fechas.push(r.fecha);}});
+  fechas=ordF(fechas);
+  var ult14=fechas.slice(-14);
+
+  function guardarEdicion(){
+    if(!editR)return;
+    var calcE=calcular(editR);
+    var reg=Object.assign({},editR,{
+      totalSueldos:calcE.totalSueldos,totalExtras:calcE.totalExtras,totalCenas:calcE.totalCenas,
+      totalCosto:calcE.totalCosto,bultos:calcE.bultos,cpb:calcE.cpb,bxp:calcE.bxp,bxh:calcE.bxh,rxh:calcE.rxh,
+      trabajadores:calcE.trab,horasExtra:calcE.hExtra,cenas:calcE.ncenas
+    });
+    save(registros.map(function(x){return x.id===reg.id?reg:x;}));
+    setEditR(null);
+  }
+
+  return (
+    <div style={{background:"#080f14",minHeight:"100vh"}}>
+      {/* Header */}
+      <div style={{background:"rgba(0,0,0,0.85)",borderBottom:"2px solid rgba(56,189,248,0.2)",padding:mob?"0 12px":"0 36px",display:"flex",alignItems:"center",height:mob?54:62,position:"sticky",top:0,zIndex:50}}>
+        <div style={{fontSize:mob?15:20,fontWeight:900,color:"#38bdf8",letterSpacing:2,marginRight:mob?8:36}}>COSTOS</div>
+        <div style={{display:"flex",flex:1}}>
+          {[["cap","CAPTURA"],["dash","DASHBOARD"],["hist","HISTORIAL"]].map(function(item){
+            var ac=tab===item[0];
+            return(
+              <button key={item[0]} onClick={function(){setTab(item[0]);}}
+                style={{padding:mob?"0 10px":"0 20px",height:mob?54:62,border:"none",borderBottom:ac?"3px solid #38bdf8":"3px solid transparent",background:"transparent",fontSize:mob?12:14,fontWeight:900,cursor:"pointer",color:ac?"#38bdf8":item[0]==="bkp"?"#f59e0b":"#4a6a7a",fontFamily:"system-ui"}}>
+                {item[1]}
+              </button>
+            );
+          })}
+        </div>
+        <button onClick={function(){if(!auth){setShowPin(true);setPinCb(null);}else{setAuth(false);}}}
+          style={{padding:mob?"7px 10px":"8px 14px",borderRadius:20,background:auth?"rgba(56,189,248,0.15)":"rgba(255,255,255,0.05)",color:auth?"#38bdf8":"#4a6a7a",fontWeight:800,fontSize:mob?11:13,cursor:"pointer",border:"2px solid "+(auth?"rgba(56,189,248,0.3)":"rgba(255,255,255,0.1)"),fontFamily:"system-ui"}}>
+          {auth?"EDITOR":"LECTOR"}
+        </button>
+      </div>
+
+      {/* CONTENIDO */}
+      <div style={{maxWidth:1400,margin:"0 auto",padding:mob?"14px 12px 80px":"24px 36px 80px"}}>
+
+        {/* CAPTURA */}
+        {tab==="cap"&&(
+          <div style={{maxWidth:1000,margin:"0 auto"}}>
+            {/* el dia */}
+            <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.09)",borderRadius:12,padding:"16px 18px",marginBottom:16}}>
+              <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end"}}>
+                <div>
+                  <label style={LBL}>Dia</label>
+                  <input type="date" value={capF} onChange={function(e){setCapF(e.target.value);setCapMsg("");setCapMan({});}}
+                    style={{background:"rgba(0,0,0,0.4)",border:"2px solid rgba(56,189,248,0.35)",borderRadius:8,padding:"10px 12px",color:"#38bdf8",fontFamily:"system-ui",fontSize:16,fontWeight:700,outline:"none"}}/>
+                </div>
+                {capF&&<div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",paddingBottom:4}}>
+                  <span style={{padding:"6px 14px",borderRadius:16,fontSize:12,fontWeight:800,
+                    background:Object.keys(capNom).length?"rgba(74,222,128,0.15)":"rgba(248,113,113,0.15)",
+                    border:"2px solid "+(Object.keys(capNom).length?"rgba(74,222,128,0.45)":"rgba(248,113,113,0.45)"),
+                    color:Object.keys(capNom).length?"#4ade80":"#f87171"}}>
+                    {Object.keys(capNom).length?"nomina "+Object.keys(capNom).length:"sin nomina"}</span>
+                  <span style={{padding:"6px 14px",borderRadius:16,fontSize:12,fontWeight:800,
+                    background:capBul?"rgba(74,222,128,0.15)":"rgba(248,113,113,0.15)",
+                    border:"2px solid "+(capBul?"rgba(74,222,128,0.45)":"rgba(248,113,113,0.45)"),
+                    color:capBul?"#4ade80":"#f87171"}}>
+                    {capBul?"bultos "+fnum(TC.bul):"sin bultos"}</span>
+                  {capCar&&<span style={{fontSize:12,color:"#4a6a7a",fontWeight:700}}>cargando...</span>}
+                  <button onClick={function(){var f=capF;setCapF("");setTimeout(function(){setCapF(f);},60);}}
+                    style={{padding:"8px 16px",background:"rgba(56,189,248,0.12)",border:"2px solid rgba(56,189,248,0.35)",borderRadius:8,color:"#38bdf8",fontFamily:"system-ui",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                    Actualizar</button>
+                </div>}
+                <div style={{flex:1}}/>
+                {capF&&<button onClick={guardaDia}
+                  style={{padding:"12px 28px",background:"rgba(74,222,128,0.18)",border:"2px solid rgba(74,222,128,0.5)",borderRadius:9,color:"#4ade80",fontFamily:"system-ui",fontSize:15,fontWeight:900,cursor:"pointer"}}>
+                  Guardar el dia</button>}
+              </div>
+              {capMsg&&<div style={{marginTop:10,fontSize:13,fontWeight:800,color:"#4ade80"}}>{capMsg}</div>}
+            </div>
+
+            {!capF
+              ? <div style={{textAlign:"center",padding:70,color:"#374151",fontSize:17,fontWeight:700}}>Elige el dia.</div>
+              : (
+              <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.09)",borderRadius:12,padding:"8px 16px 16px",overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",minWidth:760}}>
+                  <thead><tr>
+                    {["Linea","Trab","Sueldos","Extras","Cenas","Bultos","Costo del dia","Costo/bulto"].map(function(h,i){
+                      return <th key={h} style={{padding:"9px 8px",borderBottom:"2px solid rgba(56,189,248,0.25)",fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,textTransform:"uppercase",textAlign:i===0?"left":"right"}}>{h}</th>;})}
+                  </tr></thead>
+                  <tbody>
+                    {filasCap.map(function(x){
+                      var td={padding:"9px 8px",borderBottom:"1px solid rgba(255,255,255,0.06)",fontSize:15,textAlign:"right"};
+                      var inp={width:88,background:"rgba(0,0,0,0.45)",border:"2px solid rgba(255,255,255,0.14)",borderRadius:7,padding:"6px 8px",color:"#f0f0e8",fontFamily:"system-ui",fontSize:15,fontWeight:700,outline:"none",textAlign:"right"};
+                      var falta={width:88,background:"rgba(248,113,113,0.1)",border:"2px solid rgba(248,113,113,0.4)",borderRadius:7,padding:"6px 8px",color:"#f87171",fontFamily:"system-ui",fontSize:15,fontWeight:700,outline:"none",textAlign:"right"};
+                      function campo(k,hay,val){
+                        if(hay)return <span>{k==="trab"||k==="bul"?fnum(nv(val)):fmt(nv(val))}</span>;
+                        return <input style={falta} value={(capMan[x.a]||{})[k]||""} placeholder="--"
+                          onChange={function(e){var q=Object.assign({},capMan);
+                            q[x.a]=Object.assign({},q[x.a]||{});q[x.a][k]=e.target.value;setCapMan(q);}}/>;
+                      }
+                      return(
+                        <tr key={x.a} style={{opacity:(x.tot>0||nv(x.bul)>0)?1:0.45}}>
+                          <td style={Object.assign({},td,{textAlign:"left",fontWeight:900,color:AREAS[x.a].color})}>
+                            {x.a}{x.a==="Persa"&&<span style={{fontSize:10,color:"#4a6a7a",fontWeight:700}}> + embolsado</span>}</td>
+                          <td style={td}>{campo("trab",x.hayN,x.trab)}</td>
+                          <td style={td}>{campo("sue",x.hayN,x.sue)}</td>
+                          <td style={Object.assign({},td,{color:"#fbbf24"})}>{campo("ext",x.hayN,x.ext)}</td>
+                          <td style={td}>
+                            <input style={inp} value={capCena[x.a]||""} placeholder="0"
+                              onChange={function(e){var q=Object.assign({},capCena);q[x.a]=e.target.value;setCapCena(q);}}/>
+                          </td>
+                          <td style={td}>{campo("bul",x.hayB,x.bul)}</td>
+                          <td style={Object.assign({},td,{fontWeight:900,color:"#f0f0e8"})}>{fmt(x.tot)}</td>
+                          <td style={Object.assign({},td,{fontWeight:900,color:"#38bdf8"})}>{x.cpb>0?fmt(x.cpb):"-"}</td>
+                        </tr>
+                      );
+                    })}
+                    <tr>
+                      {(function(){
+                        var tt={padding:"11px 8px",fontSize:16,textAlign:"right",fontWeight:900,borderTop:"2px solid rgba(56,189,248,0.3)"};
+                        return [
+                          <td key="l" style={Object.assign({},tt,{textAlign:"left"})}>TOTAL</td>,
+                          <td key="t" style={tt}>{fnum(TC.trab)}</td>,
+                          <td key="s" style={tt}>{fmt(TC.sue)}</td>,
+                          <td key="e" style={Object.assign({},tt,{color:"#fbbf24"})}>{fmt(TC.ext)}</td>,
+                          <td key="c" style={tt}>{fnum(TC.cen)}</td>,
+                          <td key="b" style={tt}>{fnum(TC.bul)}</td>,
+                          <td key="o" style={Object.assign({},tt,{color:"#38bdf8",fontSize:18})}>{fmt(TC.tot)}</td>,
+                          <td key="p" style={Object.assign({},tt,{color:"#38bdf8"})}>{TC.bul>0?fmt(r2(TC.tot/TC.bul)):"-"}</td>
+                        ];
+                      })()}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* DASHBOARD */}
+        {tab==="dash"&&(function(){
+          var kDe=dDe?fKey(dDe):0, kHa=dHa?fKey(dHa):0;
+          var regD=porOrigen(registros).filter(function(r){var k=fKey(r.fecha);
+            if(kDe&&k<kDe)return false; if(kHa&&k>kHa)return false; return true;});
+          var areas=fArea?[fArea]:AREA_NAMES;
+          var vistas={};
+          regD.forEach(function(r){var k=fKey(r.fecha);
+            if(!vistas[k]&&areas.indexOf(r.area)>=0)vistas[k]=r.fecha;});
+          var fs=Object.keys(vistas).map(Number).sort(function(a,b){return a-b;})
+            .map(function(k){return vistas[k];});
+          function val(rr){
+            var totB=rr.reduce(function(s,r){return s+(r.bultos||0);},0);
+            var totC=0;
+            if(fConc==="Sueldos")totC=rr.reduce(function(s,r){return s+(r.totalSueldos||0);},0);
+            else if(fConc==="Extras")totC=rr.reduce(function(s,r){return s+(r.totalExtras||0);},0);
+            else if(fConc==="Cenas")totC=rr.reduce(function(s,r){return s+(r.totalCenas||0);},0);
+            else totC=rr.reduce(function(s,r){return s+(r.totalCosto||0);},0);
+            return dMetr==="gasto"?r2(totC):(totB>0?r2(totC/totB):0);
+          }
+          /* 16/10/2026: "hay" dice si ESA linea tiene registro ESE dia. Es lo que
+             decide si se pinta el punto; antes decidia el valor, y un dia con
+             costo cero se borraba de la grafica. */
+          var series=areas.map(function(a){
+            return {label:a,color:AREAS[a].color,
+              datos:fs.map(function(f){
+                var rr=regD.filter(function(r){return r.area===a&&r.fecha===f;});
+                return {label:fLbl(f),hay:rr.length>0,v:val(rr)};})};
+          }).filter(function(x){return x.datos.some(function(d){return d.hay;});});
+          return(
+          <div>
+            {/* filtro: linea, concepto y periodo */}
+            <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"14px 18px",marginBottom:16}}>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>HISTORIAL</div>
+              <Origen v={fOri} set={setFOri} n={nDias}/>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>LINEA</div>
+              <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:12}}>
+                <button onClick={function(){setFArea("");}}
+                  style={{padding:"7px 16px",border:"2px solid "+(fArea===""?"#38bdf8":"rgba(255,255,255,0.1)"),borderRadius:18,background:fArea===""?"rgba(56,189,248,0.15)":"transparent",color:fArea===""?"#38bdf8":"#4a6a7a",fontFamily:"system-ui",fontSize:12,fontWeight:700,cursor:"pointer"}}>Todas</button>
+                {AREA_NAMES.map(function(a){var sel=fArea===a;return(
+                  <button key={a} onClick={function(){setFArea(sel?"":a);}}
+                    style={{padding:"7px 16px",border:"2px solid "+(sel?AREAS[a].color:"rgba(255,255,255,0.1)"),borderRadius:18,background:sel?AREAS[a].color+"22":"transparent",color:sel?AREAS[a].color:"#4a6a7a",fontFamily:"system-ui",fontSize:12,fontWeight:700,cursor:"pointer"}}>{a}</button>
+                );})}
+              </div>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>CONCEPTO</div>
+              <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:12}}>
+                <button onClick={function(){setFConc("");}}
+                  style={{padding:"7px 16px",border:"2px solid "+(fConc===""?"#38bdf8":"rgba(255,255,255,0.1)"),borderRadius:18,background:fConc===""?"rgba(56,189,248,0.15)":"transparent",color:fConc===""?"#38bdf8":"#4a6a7a",fontFamily:"system-ui",fontSize:12,fontWeight:700,cursor:"pointer"}}>Todos</button>
+                {CONCEPTOS.map(function(c){var sel=fConc===c;var col=c==="Extras"?"#fbbf24":c==="Cenas"?"#fb923c":"#e8e4d8";return(
+                  <button key={c} onClick={function(){setFConc(sel?"":c);}}
+                    style={{padding:"7px 16px",border:"2px solid "+(sel?col:"rgba(255,255,255,0.1)"),borderRadius:18,background:sel?col+"22":"transparent",color:sel?col:"#4a6a7a",fontFamily:"system-ui",fontSize:12,fontWeight:700,cursor:"pointer"}}>{c}</button>
+                );})}
+              </div>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>PERIODO</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <input type="date" value={dDe} onChange={function(e){setDDe(e.target.value);}}
+                  style={{background:"rgba(0,0,0,0.4)",border:"2px solid rgba(56,189,248,0.3)",borderRadius:8,padding:"8px 10px",color:"#38bdf8",fontFamily:"system-ui",fontSize:14,fontWeight:700,outline:"none"}}/>
+                <span style={{color:"#4a6a7a",fontSize:12}}>a</span>
+                <input type="date" value={dHa} onChange={function(e){setDHa(e.target.value);}}
+                  style={{background:"rgba(0,0,0,0.4)",border:"2px solid rgba(56,189,248,0.3)",borderRadius:8,padding:"8px 10px",color:"#38bdf8",fontFamily:"system-ui",fontSize:14,fontWeight:700,outline:"none"}}/>
+                {(dDe||dHa)&&<button onClick={function(){setDDe("");setDHa("");}}
+                  style={{padding:"8px 16px",background:"rgba(255,255,255,0.05)",border:"2px solid rgba(255,255,255,0.12)",borderRadius:8,color:"#9ca3af",fontFamily:"system-ui",fontSize:13,fontWeight:800,cursor:"pointer"}}>Todo</button>}
+                <div style={{flex:1}}/>
+                <div style={{display:"flex",gap:6}}>
+                  {[["gasto","gasto"],["cpb","costo/bulto"]].map(function(m){var sel=dMetr===m[0];return(
+                    <button key={m[0]} onClick={function(){setDMetr(m[0]);}}
+                      style={{padding:"7px 14px",border:"2px solid "+(sel?"#38bdf8":"rgba(255,255,255,0.1)"),borderRadius:18,background:sel?"rgba(56,189,248,0.15)":"transparent",color:sel?"#38bdf8":"#4a6a7a",fontFamily:"system-ui",fontSize:12,fontWeight:800,cursor:"pointer"}}>{m[1]}</button>
+                  );})}
+                </div>
+              </div>
+            </div>
+
+            {/* la grafica. Con UN solo dia (13/10/2026) salia la pantalla en
+                blanco: ahora sale el resumen de ese dia y la grafica entra
+                sola cuando haya dos. */}
+            {fs.length===0||!series.length
+              ? <div style={{textAlign:"center",padding:70,color:"#374151",fontSize:17,fontWeight:700}}>No hay dias guardados con estos filtros.</div>
+              : fs.length===1
+              ? (function(){
+                  var f=fs[0];
+                  function gastoDe(rr){
+                    if(fConc==="Sueldos")return rr.reduce(function(s,r){return s+(r.totalSueldos||0);},0);
+                    if(fConc==="Extras")return rr.reduce(function(s,r){return s+(r.totalExtras||0);},0);
+                    if(fConc==="Cenas")return rr.reduce(function(s,r){return s+(r.totalCenas||0);},0);
+                    return rr.reduce(function(s,r){return s+(r.totalCosto||0);},0);
+                  }
+                  var filas=areas.map(function(a){
+                    var rr=regD.filter(function(r){return r.area===a&&r.fecha===f;});
+                    var bu=rr.reduce(function(s,r){return s+(r.bultos||0);},0);
+                    var ga=r2(gastoDe(rr));
+                    return {a:a,bu:bu,ga:ga,cpb:bu>0?r2(ga/bu):0};
+                  }).filter(function(x){return x.bu>0||x.ga>0;});
+                  var tb=filas.reduce(function(s,x){return s+x.bu;},0);
+                  var tg=r2(filas.reduce(function(s,x){return s+x.ga;},0));
+                  var th={textAlign:"right",fontSize:10,color:"#4a6a7a",fontWeight:900,
+                          letterSpacing:1,padding:"6px 8px",borderBottom:"2px solid rgba(255,255,255,0.08)"};
+                  var tdT={padding:"10px 8px",textAlign:"right",fontWeight:900,fontSize:15,
+                           borderTop:"2px solid rgba(255,255,255,0.12)"};
+                  return(
+                  <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"16px 18px"}}>
+                    <div style={{fontSize:12,fontWeight:900,color:"#38bdf8",letterSpacing:1,marginBottom:12}}>
+                      {"EL DIA "+fLargo(f)+" · 1 dia guardado"}
+                    </div>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"system-ui"}}>
+                      <thead><tr>
+                        <th style={Object.assign({},th,{textAlign:"left"})}>LINEA</th>
+                        <th style={th}>GASTO</th>
+                        <th style={th}>BULTOS</th>
+                        <th style={th}>COSTO/BULTO</th>
+                      </tr></thead>
+                      <tbody>
+                        {filas.map(function(x){return(
+                          <tr key={x.a}>
+                            <td style={{padding:"8px",color:AREAS[x.a].color,fontWeight:800,fontSize:14}}>{x.a}</td>
+                            <td style={{padding:"8px",textAlign:"right",color:"#e8e4d8",fontWeight:800,fontSize:14}}>{fmt(x.ga)}</td>
+                            <td style={{padding:"8px",textAlign:"right",color:"#e8e4d8",fontSize:14}}>{fnum(x.bu)}</td>
+                            <td style={{padding:"8px",textAlign:"right",color:"#38bdf8",fontWeight:800,fontSize:14}}>{x.cpb>0?fmt(x.cpb):"-"}</td>
+                          </tr>);})}
+                        <tr>
+                          <td style={Object.assign({},tdT,{textAlign:"left",color:"#e8e4d8"})}>TOTAL</td>
+                          <td style={Object.assign({},tdT,{color:"#38bdf8"})}>{fmt(tg)}</td>
+                          <td style={Object.assign({},tdT,{color:"#e8e4d8"})}>{fnum(tb)}</td>
+                          <td style={Object.assign({},tdT,{color:"#38bdf8"})}>{tb>0?fmt(r2(tg/tb)):"-"}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div style={{marginTop:12,fontSize:12,color:"#4a6a7a"}}>
+                      La grafica entra sola cuando haya dos dias guardados.
+                    </div>
+                  </div>);
+                })()
+              : (
+              <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"16px 18px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+                  <div style={{fontSize:12,fontWeight:900,color:"#38bdf8",letterSpacing:1}}>
+                    {(dMetr==="gasto"?"GASTO":"COSTO POR BULTO")+" \u00b7 "+fLbl(fs[0])+" al "+fLbl(fs[fs.length-1])+" \u00b7 "+fs.length+" dias"}
+                  </div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                    {series.map(function(x){return(
+                      <span key={x.label} style={{display:"flex",alignItems:"center",gap:5,fontSize:12,fontWeight:800,color:x.color}}>
+                        <span style={{width:12,height:3,background:x.color,borderRadius:2,display:"inline-block"}}/>{x.label}
+                      </span>);})}
+                  </div>
+                </div>
+                <LineChart series={series} dias={fs.map(fLbl)} height={series.length>1?230:195}/>
+              </div>
+            )}
+          </div>
+          );
+        })()}
+
+        {/* HISTORIAL */}
+        {tab==="hist"&&(function(){
+          var kD=hMod==="dia"?fKey(busca):0;
+          var kDe=hMod==="rango"&&hDe?fKey(hDe):0, kHa=hMod==="rango"&&hHa?fKey(hHa):0;
+          var regH=porOrigen(registros).filter(function(r){var k=fKey(r.fecha);
+            if(hMod==="dia")return kD?k===kD:true;
+            if(kDe&&k<kDe)return false; if(kHa&&k>kHa)return false; return true;});
+          var lineas=fArea?[fArea]:AREA_NAMES;
+          function valDe(o){return hConc==="Sueldos"?o.sue:hConc==="Extras"?o.ext:
+            hConc==="Cenas"?o.cen:o.tot;}
+          var filas=lineas.map(function(a){
+            var rA=regH.filter(function(r){return r.area===a;});
+            var o={area:a,sue:0,ext:0,cen:0,bul:0,dias:{}};
+            rA.forEach(function(r){o.sue+=(r.totalSueldos||0);o.ext+=(r.totalExtras||0);
+              o.cen+=(r.totalCenas||0);o.bul+=(r.bultos||0);o.dias[fKey(r.fecha)]=1;});
+            o.tot=o.sue+o.ext+o.cen; o.sel=valDe(o); o.nd=Object.keys(o.dias).length;
+            return o;});
+          var T={sue:0,ext:0,cen:0,tot:0,sel:0,bul:0};
+          filas.forEach(function(o){T.sue+=o.sue;T.ext+=o.ext;T.cen+=o.cen;
+            T.tot+=o.tot;T.sel+=o.sel;T.bul+=o.bul;});
+          /* el detalle: un renglon por dia y linea */
+          var det=regH.filter(function(r){return lineas.indexOf(r.area)>=0;})
+            .map(function(r){
+              var o={sue:r.totalSueldos||0,ext:r.totalExtras||0,cen:r.totalCenas||0};
+              o.tot=o.sue+o.ext+o.cen;
+              return {f:r.fecha,a:r.area,bul:r.bultos||0,sue:o.sue,ext:o.ext,cen:o.cen,
+                tot:o.tot,sel:valDe(o)};})
+            .sort(function(x,y){return fKey(y.f)-fKey(x.f)||
+              AREA_NAMES.indexOf(x.a)-AREA_NAMES.indexOf(y.a);});
+          var th={padding:"8px 8px",borderBottom:"2px solid rgba(56,189,248,0.25)",fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,textTransform:"uppercase",textAlign:"right"};
+          var td={padding:"8px 8px",borderBottom:"1px solid rgba(255,255,255,0.06)",fontSize:14,textAlign:"right"};
+          function apg(c){return hConc&&hConc!==c?0.35:1;}
+          var chip=function(on,col){return {padding:"7px 16px",border:"2px solid "+(on?col:"rgba(255,255,255,0.1)"),borderRadius:18,background:on?col+"22":"transparent",color:on?col:"#4a6a7a",fontFamily:"system-ui",fontSize:12,fontWeight:700,cursor:"pointer"};};
+          var inpF={background:"rgba(0,0,0,0.4)",border:"2px solid rgba(56,189,248,0.35)",borderRadius:8,padding:"8px 10px",color:"#38bdf8",fontFamily:"system-ui",fontSize:14,fontWeight:700,outline:"none"};
+          return(
+          <div>
+            {/* FILTROS */}
+            <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"14px 18px",marginBottom:14}}>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>HISTORIAL</div>
+              <Origen v={fOri} set={setFOri} n={nDias}/>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>LINEA</div>
+              <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:12}}>
+                <button onClick={function(){setFArea("");}} style={chip(fArea==="","#38bdf8")}>Todas</button>
+                {AREA_NAMES.map(function(a){return(
+                  <button key={a} onClick={function(){setFArea(fArea===a?"":a);}}
+                    style={chip(fArea===a,AREAS[a].color)}>{a}</button>);})}
+              </div>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>CONCEPTO</div>
+              <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:12}}>
+                <button onClick={function(){setHConc("");}} style={chip(hConc==="","#38bdf8")}>Todos</button>
+                {CONCEPTOS.map(function(c){var col=c==="Extras"?"#fbbf24":c==="Cenas"?"#fb923c":"#e8e4d8";
+                  return <button key={c} onClick={function(){setHConc(hConc===c?"":c);}}
+                    style={chip(hConc===c,col)}>{c}</button>;})}
+              </div>
+              <div style={{fontSize:10,color:"#4a6a7a",fontWeight:900,letterSpacing:1,marginBottom:6}}>FECHA</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                {[["todas","Todas"],["dia","Un dia"],["rango","Rango"]].map(function(m){
+                  return <button key={m[0]} onClick={function(){setHMod(m[0]);}}
+                    style={chip(hMod===m[0],"#38bdf8")}>{m[1]}</button>;})}
+                {hMod==="dia"&&<input type="date" value={busca} style={inpF}
+                  onChange={function(e){setBusca(e.target.value);}}/>}
+                {hMod==="rango"&&<input type="date" value={hDe} style={inpF}
+                  onChange={function(e){setHDe(e.target.value);}}/>}
+                {hMod==="rango"&&<span style={{color:"#4a6a7a",fontSize:12}}>a</span>}
+                {hMod==="rango"&&<input type="date" value={hHa} style={inpF}
+                  onChange={function(e){setHHa(e.target.value);}}/>}
+                <div style={{flex:1}}/>
+                <span style={{fontSize:11,color:"#4a6a7a"}}>
+                  {(function(){var q={};regH.forEach(function(r){q[fKey(r.fecha)]=1;});
+                    return Object.keys(q).length;})()} dias</span>
+              </div>
+            </div>
+
+            {/* CUANTO SE GASTO */}
+            <div style={{background:"rgba(56,189,248,0.07)",border:"2px solid rgba(56,189,248,0.3)",borderRadius:12,padding:"18px",marginBottom:14}}>
+              <div style={{textAlign:"center",marginBottom:16,paddingBottom:14,borderBottom:"1px solid rgba(56,189,248,0.15)"}}>
+                <div style={{fontSize:10,color:"#38bdf8",fontWeight:900,letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>
+                  {(fArea||"TODAS LAS LINEAS")+" - "+(hConc||"TODOS LOS CONCEPTOS")+
+                   (hMod==="dia"&&busca?" - "+fLargo(busca):
+                    hMod==="rango"&&(hDe||hHa)?" - "+(hDe?fLbl(deISO(hDe)):"inicio")+" al "+(hHa?fLbl(deISO(hHa)):"hoy"):"")}
+                </div>
+                <div style={{fontSize:40,fontWeight:900,color:"#38bdf8",fontFamily:"Georgia,serif"}}>{fmt(T.sel)}</div>
+              </div>
+              <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",minWidth:520}}>
+                <thead><tr>
+                  <th style={Object.assign({},th,{textAlign:"left"})}>Linea</th>
+                  <th style={th}>Dias</th>
+                  <th style={Object.assign({},th,{opacity:apg("Sueldos")})}>Sueldos</th>
+                  <th style={Object.assign({},th,{opacity:apg("Extras")})}>Extras</th>
+                  <th style={Object.assign({},th,{opacity:apg("Cenas")})}>Cenas</th>
+                  <th style={th}>Bultos</th>
+                  <th style={th}>{hConc||"Total"}</th>
+                </tr></thead>
+                <tbody>
+                  {filas.map(function(o){return(
+                    <tr key={o.area} style={{opacity:o.tot===0?0.4:1}}>
+                      <td style={Object.assign({},td,{textAlign:"left",fontWeight:900,color:AREAS[o.area].color})}>{o.area}</td>
+                      <td style={Object.assign({},td,{color:"#4a6a7a",fontSize:12})}>{o.nd}</td>
+                      <td style={Object.assign({},td,{opacity:apg("Sueldos")})}>{fmt(o.sue)}</td>
+                      <td style={Object.assign({},td,{color:"#fbbf24",opacity:apg("Extras")})}>{fmt(o.ext)}</td>
+                      <td style={Object.assign({},td,{color:"#fb923c",opacity:apg("Cenas")})}>{fmt(o.cen)}</td>
+                      <td style={Object.assign({},td,{color:"#4a6a7a"})}>{fnum(o.bul)}</td>
+                      <td style={Object.assign({},td,{fontWeight:900,color:"#f0f0e8"})}>{fmt(o.sel)}</td>
+                    </tr>);})}
+                  <tr>
+                    <td style={Object.assign({},td,{textAlign:"left",fontWeight:900,borderTop:"2px solid rgba(56,189,248,0.3)"})}>TOTAL</td>
+                    <td style={Object.assign({},td,{borderTop:"2px solid rgba(56,189,248,0.3)"})}></td>
+                    <td style={Object.assign({},td,{fontWeight:900,borderTop:"2px solid rgba(56,189,248,0.3)",opacity:apg("Sueldos")})}>{fmt(T.sue)}</td>
+                    <td style={Object.assign({},td,{fontWeight:900,color:"#fbbf24",borderTop:"2px solid rgba(56,189,248,0.3)",opacity:apg("Extras")})}>{fmt(T.ext)}</td>
+                    <td style={Object.assign({},td,{fontWeight:900,color:"#fb923c",borderTop:"2px solid rgba(56,189,248,0.3)",opacity:apg("Cenas")})}>{fmt(T.cen)}</td>
+                    <td style={Object.assign({},td,{fontWeight:900,color:"#4a6a7a",borderTop:"2px solid rgba(56,189,248,0.3)"})}>{fnum(T.bul)}</td>
+                    <td style={Object.assign({},td,{fontWeight:900,color:"#38bdf8",fontSize:17,borderTop:"2px solid rgba(56,189,248,0.3)"})}>{fmt(T.sel)}</td>
+                  </tr>
+                </tbody>
+              </table>
+              </div>
+            </div>
+
+            {/* DIA POR DIA */}
+            <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"8px 16px 16px",overflowX:"auto"}}>
+              {!det.length
+                ? <div style={{textAlign:"center",padding:50,color:"#374151",fontSize:16,fontWeight:700}}>Nada con ese filtro.</div>
+                : (
+                <table style={{width:"100%",borderCollapse:"collapse",minWidth:620}}>
+                  <thead><tr>
+                    <th style={Object.assign({},th,{textAlign:"left"})}>Dia</th>
+                    <th style={Object.assign({},th,{textAlign:"left"})}>Linea</th>
+                    <th style={Object.assign({},th,{opacity:apg("Sueldos")})}>Sueldos</th>
+                    <th style={Object.assign({},th,{opacity:apg("Extras")})}>Extras</th>
+                    <th style={Object.assign({},th,{opacity:apg("Cenas")})}>Cenas</th>
+                    <th style={th}>Bultos</th>
+                    <th style={th}>{hConc||"Total"}</th>
+                    <th style={th}>Costo/bulto</th>
+                  </tr></thead>
+                  <tbody>
+                    {det.map(function(x,i){return(
+                      <tr key={i}>
+                        <td style={Object.assign({},td,{textAlign:"left",fontWeight:700})}>{x.f}</td>
+                        <td style={Object.assign({},td,{textAlign:"left",fontWeight:900,color:AREAS[x.a].color})}>{x.a}</td>
+                        <td style={Object.assign({},td,{opacity:apg("Sueldos")})}>{fmt(x.sue)}</td>
+                        <td style={Object.assign({},td,{color:"#fbbf24",opacity:apg("Extras")})}>{fmt(x.ext)}</td>
+                        <td style={Object.assign({},td,{color:"#fb923c",opacity:apg("Cenas")})}>{fmt(x.cen)}</td>
+                        <td style={Object.assign({},td,{color:"#4a6a7a"})}>{fnum(x.bul)}</td>
+                        <td style={Object.assign({},td,{fontWeight:900,color:"#f0f0e8"})}>{fmt(x.sel)}</td>
+                        <td style={Object.assign({},td,{fontWeight:900,color:"#38bdf8"})}>{x.bul>0?fmt(r2(x.tot/x.bul)):"-"}</td>
+                      </tr>);})}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+          );
+        })()}
+
+      {showPin&&<ModalPin onOk={function(){pinOk();}} onCancel={function(){setShowPin(false);setPinCb(null);}}/>}
+
+      </div>
+
+      </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
